@@ -1,0 +1,18 @@
+{
+    "test_samples/calculator.py": [
+        {
+            "name": "Addition Test",
+            "input": "",
+            "expected_output": "Result: 30",
+            "expected_exit_code": 0
+        }
+    ],
+
+    "test_samples/vulnerable.py": [
+        {
+            "name": "Safe Expression Test",
+            "input": "1 + 2",
+            "expected_exit_code": 0
+        }
+    ]
+}

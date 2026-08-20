@@ -1,0 +1,7 @@
+FROM python:3.13-slim
+
+WORKDIR /sandbox
+
+COPY test_file.py /sandbox/test_file.py
+
+CMD ["python", "/sandbox/test_file.py"]
