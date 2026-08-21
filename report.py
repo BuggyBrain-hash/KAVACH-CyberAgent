@@ -10,10 +10,11 @@ def save_report(
     risk_score=None,
     risk_level=None,
     verification=None,
-    regression=None
+    regression=None,
+    patched_file=None
 ):
     """
-    Save a complete KAVACH security report.
+    Save the complete KAVACH security report.
     """
 
     report = {
@@ -22,6 +23,8 @@ def save_report(
         "timestamp": datetime.now().isoformat(),
 
         "target": filename,
+
+        "patched_file": patched_file,
 
         "risk": {
             "score": risk_score,

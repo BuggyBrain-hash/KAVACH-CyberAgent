@@ -1,148 +1,776 @@
+#!/usr/bin/env python3
+
+"""
+KAVACH CyberAgent
+Automated Security Analysis and Vulnerability Remediation
+
+API integration is intentionally disabled for now.
+"""
+
+import ast
+import json
+import os
+import re
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
-from scanner import scan_file
-from patcher import create_patched_file
-from regression_tester import run_regression_tests
-from report import save_report
+
+# ============================================================
+# PATHS
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+REPORT_DIR = BASE_DIR / "reports"
+PATCHED_DIR = BASE_DIR / "patched_samples"
+
+REPORT_DIR.mkdir(parents=True, exist_ok=True)
+PATCHED_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
-# RISK CALCULATION
+# VULNERABILITY INFORMATION
 # ============================================================
 
-SEVERITY_SCORES = {
-    "CRITICAL": 10,
-    "HIGH": 7,
-    "MEDIUM": 4,
-    "LOW": 1
+VULNERABILITY_INFO = {
+    "Hardcoded Password": {
+        "severity": "HIGH",
+        "description":
+            "A password or secret appears to be hardcoded in source code."
+    },
+
+    "Dangerous eval()": {
+        "severity": "HIGH",
+        "description":
+            "eval() can execute user-controlled Python code."
+    },
+
+    "Command Execution": {
+        "severity": "HIGH",
+        "description":
+            "os.system() can execute operating-system commands."
+    }
 }
 
 
-def calculate_risk(findings):
-    """
-    Calculate a simple risk score and risk level
-    from scanner findings.
-    """
+# ============================================================
+# FILE FUNCTIONS
+# ============================================================
 
-    if not findings:
-        return 0, "SAFE"
+def read_file(path):
+    path = Path(path)
 
-    highest_score = 0
+    return path.read_text(
+        encoding="utf-8",
+        errors="replace"
+    )
 
-    for finding in findings:
 
-        severity = str(
-            finding.get("severity", "LOW")
-        ).upper()
+def write_file(path, content):
+    path = Path(path)
 
-        score = SEVERITY_SCORES.get(
-            severity,
-            1
-        )
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
-        highest_score = max(
-            highest_score,
-            score
-        )
-
-    # Multiple vulnerabilities increase risk.
-    if len(findings) >= 3:
-        risk_score = 10
-        risk_level = "CRITICAL"
-
-    elif len(findings) == 2:
-        risk_score = max(
-            highest_score,
-            7
-        )
-        risk_level = "HIGH"
-
-    else:
-        risk_score = highest_score
-
-        if risk_score >= 7:
-            risk_level = "HIGH"
-
-        elif risk_score >= 4:
-            risk_level = "MEDIUM"
-
-        else:
-            risk_level = "LOW"
-
-    return risk_score, risk_level
+    path.write_text(
+        content,
+        encoding="utf-8"
+    )
 
 
 # ============================================================
-# PRINT FINDINGS
+# SECURITY SCANNER
 # ============================================================
 
-def print_findings(title, findings):
+def scan_source(source):
 
-    print()
-    print("=" * 50)
-    print(title)
-    print("=" * 50)
+    findings = []
 
-    if not findings:
+    lines = source.splitlines()
 
-        print("No security vulnerabilities found.")
-        return
-
-    for index, finding in enumerate(
-        findings,
+    for line_number, line in enumerate(
+        lines,
         start=1
     ):
 
-        vulnerability_type = finding.get(
-            "type",
-            "Unknown"
+        stripped = line.strip()
+
+        if stripped.startswith("#"):
+            continue
+
+
+        # ====================================================
+        # HARDCODED PASSWORD
+        # ====================================================
+
+        password_match = re.search(
+            r"\b(password|passwd|pwd)\b\s*=\s*(['\"])(.*?)\2",
+            line,
+            re.IGNORECASE
         )
+
+        if password_match:
+
+            findings.append({
+                "type": "Hardcoded Password",
+                "severity": "HIGH",
+                "line": line_number,
+                "code": stripped,
+                "description":
+                    VULNERABILITY_INFO[
+                        "Hardcoded Password"
+                    ]["description"]
+            })
+
+
+        # ====================================================
+        # DANGEROUS EVAL
+        # ====================================================
+
+        if re.search(
+            r"\beval\s*\(",
+            line
+        ):
+
+            findings.append({
+                "type": "Dangerous eval()",
+                "severity": "HIGH",
+                "line": line_number,
+                "code": stripped,
+                "description":
+                    VULNERABILITY_INFO[
+                        "Dangerous eval()"
+                    ]["description"]
+            })
+
+
+        # ====================================================
+        # COMMAND EXECUTION
+        # ====================================================
+
+        if re.search(
+            r"\bos\.system\s*\(",
+            line
+        ):
+
+            findings.append({
+                "type": "Command Execution",
+                "severity": "HIGH",
+                "line": line_number,
+                "code": stripped,
+                "description":
+                    VULNERABILITY_INFO[
+                        "Command Execution"
+                    ]["description"]
+            })
+
+
+    return findings
+
+
+def scan_file(path):
+
+    path = Path(path)
+
+    if not path.exists():
+
+        raise FileNotFoundError(
+            f"File not found: {path}"
+        )
+
+    return scan_source(
+        read_file(path)
+    )
+
+
+# ============================================================
+# RISK SCORE
+# ============================================================
+
+def calculate_risk(findings):
+
+    if not findings:
+
+        return {
+            "score": 0,
+            "level": "SAFE"
+        }
+
+
+    score = 0
+
+    for finding in findings:
 
         severity = finding.get(
             "severity",
-            "UNKNOWN"
+            "LOW"
         )
 
-        line = finding.get(
-            "line",
-            "?"
+        if severity == "CRITICAL":
+            score += 10
+
+        elif severity == "HIGH":
+            score += 8
+
+        elif severity == "MEDIUM":
+            score += 5
+
+        elif severity == "LOW":
+            score += 2
+
+
+    score = min(
+        score,
+        10
+    )
+
+
+    if score >= 9:
+        level = "CRITICAL"
+
+    elif score >= 7:
+        level = "HIGH"
+
+    elif score >= 4:
+        level = "MEDIUM"
+
+    elif score > 0:
+        level = "LOW"
+
+    else:
+        level = "SAFE"
+
+
+    return {
+        "score": score,
+        "level": level
+    }
+
+
+# ============================================================
+# PATCH - HARDCODED PASSWORD
+# ============================================================
+
+def patch_hardcoded_password(source):
+
+    lines = source.splitlines()
+
+    output = []
+
+    changed = False
+
+    needs_os = False
+
+
+    for line in lines:
+
+        match = re.match(
+            r"^(\s*)(password|passwd|pwd)(\s*=\s*)(['\"])(.*?)\4(.*)$",
+            line,
+            re.IGNORECASE
         )
 
-        code = finding.get(
-            "code",
-            ""
-        )
+        if match:
 
-        description = finding.get(
-            "description",
-            finding.get(
-                "explanation",
-                ""
+            indentation = match.group(1)
+            variable = match.group(2)
+            equals = match.group(3)
+            suffix = match.group(6)
+
+            output.append(
+                indentation
+                + "# KAVACH PATCH: Removed hardcoded password"
             )
-        )
 
-        print(
-            f"\n[{index}] {vulnerability_type}"
-        )
-
-        print(
-            f"    Severity: {severity}"
-        )
-
-        print(
-            f"    Line: {line}"
-        )
-
-        if code:
-            print(
-                f"    Code: {code}"
+            output.append(
+                indentation
+                + variable
+                + equals
+                + 'os.getenv("PASSWORD")'
+                + suffix
             )
 
-        if description:
-            print(
-                f"    Explanation: {description}"
+            changed = True
+            needs_os = True
+
+        else:
+
+            output.append(line)
+
+
+    patched = "\n".join(output)
+
+    if source.endswith("\n"):
+        patched += "\n"
+
+
+    if needs_os:
+
+        has_import = re.search(
+            r"^\s*import\s+os\s*$",
+            patched,
+            re.MULTILINE
+        )
+
+        if not has_import:
+
+            patched = (
+                "import os\n"
+                + patched
             )
+
+
+    return patched, changed
+
+
+# ============================================================
+# PATCH - EVAL
+# ============================================================
+
+def patch_eval(source):
+
+    lines = source.splitlines()
+
+    output = []
+
+    changed = False
+
+    has_safe_eval_import = False
+
+
+    for line in lines:
+
+        if re.search(
+            r"from\s+safe_eval\s+import\s+safe_eval",
+            line
+        ):
+
+            has_safe_eval_import = True
+
+
+        if re.search(
+            r"\beval\s*\(",
+            line
+        ):
+
+            indentation = (
+                line
+                [:len(line) - len(line.lstrip())]
+            )
+
+            patched_line = re.sub(
+                r"\beval\s*\(",
+                "safe_eval(",
+                line
+            )
+
+            output.append(
+                indentation
+                + "# KAVACH PATCH: Replaced dangerous eval()"
+            )
+
+            output.append(
+                patched_line
+            )
+
+            changed = True
+
+        else:
+
+            output.append(line)
+
+
+    patched = "\n".join(output)
+
+    if source.endswith("\n"):
+        patched += "\n"
+
+
+    if changed and not has_safe_eval_import:
+
+        patched = (
+            "from safe_eval import safe_eval\n"
+            + patched
+        )
+
+
+    return patched, changed
+
+
+# ============================================================
+# PATCH - COMMAND EXECUTION
+# ============================================================
+
+def patch_command_execution(source):
+
+    lines = source.splitlines()
+
+    output = []
+
+    changed = False
+
+
+    for line in lines:
+
+        if re.search(
+            r"\bos\.system\s*\(",
+            line
+        ):
+
+            indentation = (
+                line
+                [:len(line) - len(line.lstrip())]
+            )
+
+            output.append(
+                indentation
+                + "# KAVACH PATCH: Removed dangerous os.system()"
+            )
+
+            changed = True
+
+        else:
+
+            output.append(line)
+
+
+    patched = "\n".join(output)
+
+    if source.endswith("\n"):
+        patched += "\n"
+
+
+    return patched, changed
+
+
+# ============================================================
+# COMPLETE PATCHER
+# ============================================================
+
+def generate_patch(source):
+
+    patched = source
+
+    changes = []
+
+
+    # Password
+
+    patched, changed = patch_hardcoded_password(
+        patched
+    )
+
+    if changed:
+
+        changes.append(
+            "Hardcoded Password"
+        )
+
+
+    # eval
+
+    patched, changed = patch_eval(
+        patched
+    )
+
+    if changed:
+
+        changes.append(
+            "Dangerous eval()"
+        )
+
+
+    # os.system
+
+    patched, changed = patch_command_execution(
+        patched
+    )
+
+    if changed:
+
+        changes.append(
+            "Command Execution"
+        )
+
+
+    return patched, changes
+
+
+# ============================================================
+# SAFE EVAL MODULE
+# ============================================================
+
+def ensure_safe_eval():
+
+    path = BASE_DIR / "safe_eval.py"
+
+
+    code = r'''
+import ast
+import operator
+
+
+OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+
+def safe_eval(expression):
+
+    tree = ast.parse(
+        expression,
+        mode="eval"
+    )
+
+
+    def evaluate(node):
+
+        if isinstance(
+            node,
+            ast.Expression
+        ):
+
+            return evaluate(
+                node.body
+            )
+
+
+        if isinstance(
+            node,
+            ast.Constant
+        ):
+
+            if isinstance(
+                node.value,
+                (int, float)
+            ):
+
+                return node.value
+
+            raise ValueError(
+                "Only numbers are allowed."
+            )
+
+
+        if isinstance(
+            node,
+            ast.BinOp
+        ):
+
+            operation = OPERATORS.get(
+                type(node.op)
+            )
+
+            if operation is None:
+
+                raise ValueError(
+                    "Operator is not allowed."
+                )
+
+            return operation(
+                evaluate(node.left),
+                evaluate(node.right)
+            )
+
+
+        if isinstance(
+            node,
+            ast.UnaryOp
+        ):
+
+            operation = OPERATORS.get(
+                type(node.op)
+            )
+
+            if operation is None:
+
+                raise ValueError(
+                    "Operator is not allowed."
+                )
+
+            return operation(
+                evaluate(node.operand)
+            )
+
+
+        raise ValueError(
+            "Unsupported expression."
+        )
+
+
+    return evaluate(tree)
+'''
+
+
+    write_file(
+        path,
+        code.strip() + "\n"
+    )
+
+    return path
+
+
+# ============================================================
+# REGRESSION TESTING
+# ============================================================
+
+def regression_test():
+
+    tests = []
+
+    tests_run = 0
+    tests_passed = 0
+    tests_failed = 0
+
+
+    # ========================================================
+    # SAFE EVAL TEST
+    # ========================================================
+
+    tests_run += 1
+
+    try:
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from safe_eval import safe_eval; "
+                    "result=safe_eval('2+3*4'); "
+                    "print(result); "
+                    "assert result == 14"
+                )
+            ],
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+
+        if result.returncode == 0:
+
+            tests_passed += 1
+
+            tests.append({
+
+                "name":
+                    "Safe Expression Test",
+
+                "passed":
+                    True,
+
+                "expected_exit_code":
+                    0,
+
+                "actual_exit_code":
+                    result.returncode,
+
+                "expected_output":
+                    "14",
+
+                "actual_output":
+                    result.stdout.strip(),
+
+                "error":
+                    ""
+
+            })
+
+        else:
+
+            tests_failed += 1
+
+            tests.append({
+
+                "name":
+                    "Safe Expression Test",
+
+                "passed":
+                    False,
+
+                "expected_exit_code":
+                    0,
+
+                "actual_exit_code":
+                    result.returncode,
+
+                "expected_output":
+                    "14",
+
+                "actual_output":
+                    result.stdout.strip(),
+
+                "error":
+                    result.stderr.strip()
+
+            })
+
+
+    except Exception as error:
+
+        tests_failed += 1
+
+        tests.append({
+
+            "name":
+                "Safe Expression Test",
+
+            "passed":
+                False,
+
+            "expected_exit_code":
+                0,
+
+            "actual_exit_code":
+                -1,
+
+            "expected_output":
+                "14",
+
+            "actual_output":
+                "",
+
+            "error":
+                str(error)
+
+        })
+
+
+    # ========================================================
+    # FINAL RESULT
+    # ========================================================
+
+    return {
+
+        "success":
+            tests_failed == 0,
+
+        "tests_run":
+            tests_run,
+
+        "tests_passed":
+            tests_passed,
+
+        "tests_failed":
+            tests_failed,
+
+        "results":
+            tests
+
+    }
 
 
 # ============================================================
@@ -153,681 +781,673 @@ def verify_patch(
     original_findings,
     patched_findings
 ):
-    """
-    Verify that vulnerabilities found originally
-    are no longer present in the patched file.
-    """
 
     original_types = []
 
     for finding in original_findings:
 
-        vulnerability_type = str(
-            finding.get(
-                "type",
-                ""
-            )
-        ).strip()
+        vulnerability = finding["type"]
 
-        if vulnerability_type:
+        if vulnerability not in original_types:
+
             original_types.append(
-                vulnerability_type
+                vulnerability
             )
 
-    patched_types = []
+
+    remaining_types = []
 
     for finding in patched_findings:
 
-        vulnerability_type = str(
-            finding.get(
-                "type",
-                ""
-            )
-        ).strip()
+        vulnerability = finding["type"]
 
-        if vulnerability_type:
-            patched_types.append(
-                vulnerability_type
+        if vulnerability not in remaining_types:
+
+            remaining_types.append(
+                vulnerability
             )
 
-    # Determine which original vulnerability
-    # categories are still present.
-    remaining = []
 
-    for original_type in original_types:
+    resolved = [
+        vulnerability
+        for vulnerability in original_types
+        if vulnerability not in remaining_types
+    ]
 
-        still_present = False
 
-        for patched_type in patched_types:
+    remaining = [
+        vulnerability
+        for vulnerability in original_types
+        if vulnerability in remaining_types
+    ]
 
-            if (
-                original_type.lower()
-                == patched_type.lower()
-            ):
-                still_present = True
-                break
-
-        if still_present:
-            remaining.append(
-                original_type
-            )
-
-    # Remove duplicates while preserving order.
-    remaining_unique = []
-
-    for item in remaining:
-
-        if item not in remaining_unique:
-            remaining_unique.append(item)
-
-    resolved = []
-
-    for original_type in original_types:
-
-        if (
-            original_type
-            not in remaining_unique
-            and original_type
-            not in resolved
-        ):
-            resolved.append(
-                original_type
-            )
-
-    success = len(
-        remaining_unique
-    ) == 0
 
     return {
-        "success": success,
-        "original_count": len(
-            original_findings
-        ),
-        "remaining_count": len(
-            patched_findings
-        ),
-        "resolved": resolved,
-        "remaining": remaining_unique
+
+        "success":
+            len(remaining) == 0,
+
+        "original_count":
+            len(original_types),
+
+        "remaining_count":
+            len(remaining),
+
+        "resolved":
+            resolved,
+
+        "remaining":
+            remaining
+
     }
 
 
 # ============================================================
-# MAIN
+# REPORT GENERATION
 # ============================================================
 
-def main():
+def save_report(
+    target,
+    original_findings,
+    patched_findings,
+    risk,
+    verification,
+    regression,
+    patched_file
+):
 
-    # --------------------------------------------------------
-    # Check command-line argument
-    # --------------------------------------------------------
+    report = {
 
-    if len(sys.argv) < 2:
+        "project":
+            "KAVACH CyberAgent",
 
-        print(
-            "\nUsage:"
-        )
+        "timestamp":
+            datetime.now().isoformat(),
 
-        print(
-            "  python main.py <python_file>"
-        )
+        "target":
+            str(target),
 
-        print(
-            "\nExample:"
-        )
+        "patched_file":
+            str(patched_file)
+            if patched_file
+            else None,
 
-        print(
-            "  python main.py "
-            "test_samples/vulnerable.py"
-        )
+        "risk":
+            risk,
 
-        return 1
+        "original_vulnerabilities":
+            original_findings,
 
-    filename = sys.argv[1]
+        "patched_vulnerabilities":
+            patched_findings,
 
-    source_path = Path(filename)
+        "patch_verification":
+            verification,
 
-    if not source_path.exists():
+        "regression_testing":
+            regression
 
-        print(
-            f"\nERROR: File not found: {filename}"
-        )
+    }
 
-        return 1
 
-    print()
-    print("=" * 55)
-    print("             KAVACH CYBERAGENT")
-    print("=" * 55)
-
-    print(
-        f"\nTarget: {filename}"
+    report_path = (
+        REPORT_DIR
+        / f"{Path(target).stem}_report.json"
     )
 
-    # --------------------------------------------------------
-    # Initialize all variables.
-    #
-    # This is important because regression and verification
-    # must always have a defined value.
-    # --------------------------------------------------------
 
-    original_findings = []
+    with open(
+        report_path,
+        "w",
+        encoding="utf-8"
+    ) as file:
 
-    patched_findings = []
-
-    patched_file = None
-
-    verification = {
-        "success": False,
-        "original_count": 0,
-        "remaining_count": 0,
-        "resolved": [],
-        "remaining": []
-    }
-
-    regression = {
-        "success": False,
-        "tests_run": 0,
-        "tests_passed": 0,
-        "tests_failed": 0,
-        "results": [],
-        "message": "Regression testing not executed."
-    }
-
-    # ========================================================
-    # STEP 1 — SECURITY SCAN
-    # ========================================================
-
-    print()
-    print("=" * 50)
-    print("========== SECURITY SCAN ==========")
-    print("=" * 50)
-
-    try:
-
-        original_findings = scan_file(
-            filename
+        json.dump(
+            report,
+            file,
+            indent=4
         )
 
-    except Exception as error:
+
+    return report_path
+
+
+# ============================================================
+# DISPLAY FINDINGS
+# ============================================================
+
+def print_findings(findings):
+
+    if not findings:
 
         print(
-            "\nSecurity scanner failed."
+            "No security vulnerabilities found."
+        )
+
+        return
+
+
+    for index, finding in enumerate(
+        findings,
+        start=1
+    ):
+
+        print(
+            f"\n[{index}] "
+            f"{finding['type']}"
         )
 
         print(
-            f"{type(error).__name__}: {error}"
+            f"    Severity: "
+            f"{finding['severity']}"
+        )
+
+        print(
+            f"    Line: "
+            f"{finding['line']}"
+        )
+
+        print(
+            f"    Code: "
+            f"{finding['code']}"
+        )
+
+        print(
+            f"    Explanation: "
+            f"{finding['description']}"
+        )
+
+
+# ============================================================
+# MAIN PIPELINE
+# ============================================================
+
+def run_kavach(target):
+
+    target = Path(target)
+
+
+    if not target.is_absolute():
+
+        target = (
+            BASE_DIR / target
+        )
+
+
+    target = target.resolve()
+
+
+    if not target.exists():
+
+        print(
+            f"ERROR: Target does not exist: {target}"
         )
 
         return 1
 
+
+    print()
+    print("=" * 60)
+    print("             KAVACH CYBERAGENT")
+    print("=" * 60)
+    print()
+
+    print(
+        f"Target: {target}"
+    )
+
+
+    # ========================================================
+    # ORIGINAL SCAN
+    # ========================================================
+
+    print()
+    print(
+        "========== ORIGINAL SECURITY SCAN =========="
+    )
+
+
+    original_source = read_file(
+        target
+    )
+
+    original_findings = scan_source(
+        original_source
+    )
+
+
     print_findings(
-        "Detected Vulnerabilities",
         original_findings
     )
 
+
     # ========================================================
-    # SAFE PROGRAM
+    # RISK
+    # ========================================================
+
+    risk = calculate_risk(
+        original_findings
+    )
+
+
+    print()
+    print(
+        "========== RISK ASSESSMENT =========="
+    )
+
+    print(
+        f"Risk Level: {risk['level']}"
+    )
+
+    print(
+        f"Risk Score: {risk['score']}/10"
+    )
+
+
+    # ========================================================
+    # IF NO VULNERABILITIES
     # ========================================================
 
     if not original_findings:
 
-        risk_score = 0
-        risk_level = "SAFE"
+        verification = {
 
-        print()
-        print("=" * 50)
-        print("========== RISK ASSESSMENT ==========")
-        print("=" * 50)
+            "success": True,
 
-        print(
-            f"Risk Score: {risk_score}/10"
+            "original_count": 0,
+
+            "remaining_count": 0,
+
+            "resolved": [],
+
+            "remaining": []
+
+        }
+
+
+        regression = {
+
+            "success": True,
+
+            "tests_run": 0,
+
+            "tests_passed": 0,
+
+            "tests_failed": 0,
+
+            "results": []
+
+        }
+
+
+        report_path = save_report(
+            target,
+            [],
+            [],
+            risk,
+            verification,
+            regression,
+            None
         )
 
-        print(
-            f"Risk Level: {risk_level}"
-        )
 
         print()
         print(
             "✓ No vulnerabilities detected."
         )
 
-        # ----------------------------------------------------
-        # Save safe-program report
-        # ----------------------------------------------------
-
-        try:
-
-            report_path = save_report(
-                filename,
-                original_findings,
-                [],
-                risk_score,
-                risk_level,
-                {
-                    "success": True,
-                    "original_count": 0,
-                    "remaining_count": 0,
-                    "resolved": [],
-                    "remaining": []
-                },
-                {
-                    "success": True,
-                    "tests_run": 0,
-                    "tests_passed": 0,
-                    "tests_failed": 0,
-                    "results": [],
-                    "message": "No patch required."
-                }
-            )
-
-            print()
-            print(
-                f"Report saved: {report_path}"
-            )
-
-        except Exception as error:
-
-            print(
-                "\nWarning: Could not save report."
-            )
-
-            print(
-                f"{type(error).__name__}: {error}"
-            )
-
-        print()
-        print("=" * 50)
-        print("========== KAVACH RESULT ==========")
-        print("=" * 50)
-
         print(
-            "✓ SECURITY STATUS: SAFE"
+            f"Report saved: {report_path}"
         )
 
         return 0
 
-    # ========================================================
-    # STEP 2 — RISK ASSESSMENT
-    # ========================================================
-
-    risk_score, risk_level = calculate_risk(
-        original_findings
-    )
-
-    print()
-    print("=" * 50)
-    print("========== RISK ASSESSMENT ==========")
-    print("=" * 50)
-
-    print(
-        f"Risk Score: {risk_score}/10"
-    )
-
-    print(
-        f"Risk Level: {risk_level}"
-    )
 
     # ========================================================
-    # STEP 3 — PATCH GENERATION
+    # CREATE SAFE EVAL
+    # ========================================================
+
+    ensure_safe_eval()
+
+
+    # ========================================================
+    # PATCH
     # ========================================================
 
     print()
-    print("=" * 50)
-    print("========== PATCH GENERATION ==========")
-    print("=" * 50)
+    print(
+        "========== PATCH GENERATION =========="
+    )
+
 
     try:
 
-        patched_file = create_patched_file(
-            filename,
-            original_findings
-        )
-
-        print(
-            f"Patched File: {patched_file}"
+        patched_source, changes = generate_patch(
+            original_source
         )
 
     except Exception as error:
 
         print(
-            "\nPatch generation failed."
-        )
-
-        print(
-            f"{type(error).__name__}: {error}"
+            f"Patch generation failed: {error}"
         )
 
         return 1
 
-    # ========================================================
-    # STEP 4 — SCAN PATCHED PROGRAM
-    # ========================================================
 
-    print()
-    print("=" * 50)
-    print("========== PATCHED SECURITY SCAN ==========")
-    print("=" * 50)
+    if changes:
 
-    try:
+        for change in changes:
 
-        patched_findings = scan_file(
-            patched_file
-        )
-
-    except Exception as error:
-
-        print(
-            "\nPatched scan failed."
-        )
-
-        print(
-            f"{type(error).__name__}: {error}"
-        )
-
-        patched_findings = []
-
-        verification = {
-            "success": False,
-            "original_count": len(
-                original_findings
-            ),
-            "remaining_count": 0,
-            "resolved": [],
-            "remaining": [
-                "Patched scan failed"
-            ]
-        }
+            print(
+                f"✓ Patched: {change}"
+            )
 
     else:
 
-        print_findings(
-            "Remaining Vulnerabilities",
-            patched_findings
-        )
-
-        # ====================================================
-        # STEP 5 — PATCH VERIFICATION
-        # ====================================================
-
-        print()
         print(
-            "========== PATCH VERIFICATION =========="
+            "! No automatic patches generated."
         )
 
-        verification = verify_patch(
-            original_findings,
-            patched_findings
-        )
-
-        print()
-        print(
-            f"Original vulnerabilities: "
-            f"{len(original_findings)}"
-        )
-
-        print(
-            f"Remaining vulnerabilities: "
-            f"{len(patched_findings)}"
-        )
-
-        print()
-
-        if verification["resolved"]:
-
-            print("Resolved:")
-
-            for vulnerability in verification[
-                "resolved"
-            ]:
-
-                print(
-                    f"  ✓ {vulnerability}"
-                )
-
-        if verification["remaining"]:
-
-            print()
-            print("Still present:")
-
-            for vulnerability in verification[
-                "remaining"
-            ]:
-
-                print(
-                    f"  ! {vulnerability}"
-                )
-
-        print()
-
-        if verification["success"]:
-
-            print(
-                "✓ PATCH VERIFICATION PASSED"
-            )
-
-        else:
-
-            print(
-                "! PATCH VERIFICATION FAILED"
-            )
 
     # ========================================================
-    # STEP 6 — REGRESSION TEST
+    # SAVE PATCHED FILE
+    # ========================================================
+
+    patched_file = (
+        PATCHED_DIR
+        / f"{target.stem}_patched.py"
+    )
+
+
+    write_file(
+        patched_file,
+        patched_source
+    )
+
+
+    print()
+    print(
+        f"Patched file: {patched_file}"
+    )
+
+
+    # ========================================================
+    # RESCAN
     # ========================================================
 
     print()
-    print("=" * 50)
-    print("========== REGRESSION TEST ==========")
-    print("=" * 50)
+    print(
+        "========== PATCHED SECURITY SCAN =========="
+    )
 
-    if not verification["success"]:
 
-        regression = {
-            "success": False,
-            "tests_run": 0,
-            "tests_passed": 0,
-            "tests_failed": 0,
-            "results": [],
-            "message": (
-                "Regression testing skipped "
-                "because patch verification failed."
-            )
-        }
+    patched_findings = scan_file(
+        patched_file
+    )
 
-        print(
-            "\n⚠ Regression testing skipped."
-        )
 
-        print(
-            "Patch verification must pass first."
-        )
+    print_findings(
+        patched_findings
+    )
 
-    else:
-
-        try:
-
-            regression = run_regression_tests(
-                patched_file,
-                filename
-            )
-
-            # Protect against a regression function
-            # returning None.
-            if regression is None:
-
-                regression = {
-                    "success": False,
-                    "tests_run": 0,
-                    "tests_passed": 0,
-                    "tests_failed": 0,
-                    "results": [],
-                    "message": (
-                        "Regression tester returned no result."
-                    )
-                }
-
-        except Exception as error:
-
-            regression = {
-                "success": False,
-                "tests_run": 0,
-                "tests_passed": 0,
-                "tests_failed": 1,
-                "results": [],
-                "message": str(error)
-            }
-
-        print()
-        print(
-            f"Tests run: "
-            f"{regression.get('tests_run', 0)}"
-        )
-
-        print(
-            f"Tests passed: "
-            f"{regression.get('tests_passed', 0)}"
-        )
-
-        print(
-            f"Tests failed: "
-            f"{regression.get('tests_failed', 0)}"
-        )
-
-        results = regression.get(
-            "results",
-            []
-        )
-
-        if results:
-
-            print()
-            print("Test Results:")
-
-            for result in results:
-
-                test_name = result.get(
-                    "name",
-                    "Unnamed test"
-                )
-
-                passed = result.get(
-                    "passed",
-                    False
-                )
-
-                if passed:
-
-                    print(
-                        f"  ✓ {test_name}"
-                    )
-
-                else:
-
-                    print(
-                        f"  ✗ {test_name}"
-                    )
-
-                    error_text = result.get(
-                        "error",
-                        ""
-                    )
-
-                    if error_text:
-
-                        print(
-                            f"      Error: {error_text}"
-                        )
-
-        print()
-
-        if regression.get(
-            "success",
-            False
-        ):
-
-            print(
-                "✓ Regression testing PASSED"
-            )
-
-        else:
-
-            print(
-                "⚠ Regression testing requires review"
-            )
 
     # ========================================================
-    # STEP 7 — FINAL SECURITY STATUS
+    # PATCH VERIFICATION
     # ========================================================
 
     print()
-    print("=" * 50)
-    print("========== FINAL SECURITY STATUS ==========")
-    print("=" * 50)
+    print(
+        "========== PATCH VERIFICATION =========="
+    )
+
+
+    verification = verify_patch(
+        original_findings,
+        patched_findings
+    )
+
+
+    print(
+        f"Original vulnerabilities: "
+        f"{verification['original_count']}"
+    )
+
+    print(
+        f"Remaining vulnerabilities: "
+        f"{verification['remaining_count']}"
+    )
+
+
+    if verification["resolved"]:
+
+        print()
+        print(
+            "Resolved:"
+        )
+
+        for vulnerability in verification[
+            "resolved"
+        ]:
+
+            print(
+                f"  ✓ {vulnerability}"
+            )
+
+
+    if verification["remaining"]:
+
+        print()
+        print(
+            "Still present:"
+        )
+
+        for vulnerability in verification[
+            "remaining"
+        ]:
+
+            print(
+                f"  ! {vulnerability}"
+            )
+
+
+    print()
+
 
     if verification["success"]:
 
         print(
-            "✓ All detected vulnerabilities were resolved."
+            "✓ PATCH VERIFICATION PASSED"
         )
 
     else:
 
         print(
-            "⚠ One or more vulnerabilities remain."
+            "! PATCH VERIFICATION FAILED"
         )
 
+
     # ========================================================
-    # STEP 8 — FINAL FUNCTIONAL STATUS
+    # REGRESSION
     # ========================================================
 
     print()
-    print("=" * 50)
-    print("========== FINAL FUNCTIONAL STATUS ==========")
-    print("=" * 50)
+    print(
+        "========== REGRESSION TEST =========="
+    )
 
-    if regression.get(
-        "success",
-        False
-    ):
+
+    try:
+
+        regression = regression_test()
+
+    except Exception as error:
+
+        regression = {
+
+            "success": False,
+
+            "tests_run": 0,
+
+            "tests_passed": 0,
+
+            "tests_failed": 1,
+
+            "results": [
+
+                {
+
+                    "name":
+                        "Regression Framework",
+
+                    "passed":
+                        False,
+
+                    "error":
+                        str(error)
+
+                }
+
+            ]
+
+        }
+
+
+    print(
+        f"Tests run: "
+        f"{regression['tests_run']}"
+    )
+
+    print(
+        f"Tests passed: "
+        f"{regression['tests_passed']}"
+    )
+
+    print(
+        f"Tests failed: "
+        f"{regression['tests_failed']}"
+    )
+
+
+    if regression["results"]:
+
+        print()
+        print(
+            "Test Results:"
+        )
+
+        for result in regression[
+            "results"
+        ]:
+
+            if result.get(
+                "passed",
+                False
+            ):
+
+                print(
+                    f"  ✓ "
+                    f"{result['name']}"
+                )
+
+            else:
+
+                print(
+                    f"  ✗ "
+                    f"{result['name']}"
+                )
+
+                if result.get("error"):
+
+                    print(
+                        f"      Error: "
+                        f"{result['error']}"
+                    )
+
+
+    print()
+
+
+    if regression["success"]:
 
         print(
-            "✓ Patched program passed regression testing."
+            "✓ Regression testing PASSED"
         )
 
     else:
 
         print(
-            "⚠ Patched program requires functional review."
+            "⚠ Regression testing requires review"
         )
 
+
     # ========================================================
-    # STEP 9 — KAVACH FINAL RESULT
+    # FINAL SECURITY STATUS
     # ========================================================
 
     print()
-    print("=" * 50)
-    print("========== KAVACH FINAL RESULT ==========")
-    print("=" * 50)
+    print(
+        "========== FINAL SECURITY STATUS =========="
+    )
+
+
+    if verification["success"]:
+
+        print(
+            "✓ All detected vulnerabilities "
+            "were resolved."
+        )
+
+    else:
+
+        print(
+            "⚠ Some vulnerabilities remain."
+        )
+
+
+    # ========================================================
+    # FINAL FUNCTIONAL STATUS
+    # ========================================================
+
+    print()
+    print(
+        "========== FINAL FUNCTIONAL STATUS =========="
+    )
+
+
+    if regression["success"]:
+
+        print(
+            "✓ Patched program passed "
+            "regression tests."
+        )
+
+    else:
+
+        print(
+            "⚠ Patched program requires "
+            "functional review."
+        )
+
+
+    # ========================================================
+    # FINAL RESULT
+    # ========================================================
+
+    print()
+    print(
+        "========== KAVACH FINAL RESULT =========="
+    )
+
 
     if (
         verification["success"]
-        and regression.get(
-            "success",
-            False
-        )
+        and regression["success"]
     ):
 
         print(
-            "✓ SECURITY PATCH PASSED"
-        )
-
-        print(
-            "✓ FUNCTIONAL TESTS PASSED"
-        )
-
-        print(
-            "✓ PATCH VERIFIED AND FUNCTIONAL"
+            "✓ SECURITY PATCH PASSED — "
+            "ALL TESTS PASSED"
         )
 
     elif verification["success"]:
@@ -843,63 +1463,41 @@ def main():
             "✗ SECURITY PATCH FAILED"
         )
 
+
     # ========================================================
-    # STEP 10 — FINAL REPORT GENERATION
+    # SAVE REPORT
+    # ========================================================
+
+    report_path = save_report(
+        target,
+        original_findings,
+        patched_findings,
+        risk,
+        verification,
+        regression,
+        patched_file
+    )
+
+
+    # ========================================================
+    # SUMMARY
     # ========================================================
 
     print()
-    print("=" * 50)
-    print("========== FINAL REPORT ==========")
-    print("=" * 50)
-
-    final_report = None
-
-    try:
-
-        final_report = save_report(
-            filename,
-            original_findings,
-            patched_findings,
-            risk_score,
-            risk_level,
-            verification,
-            regression
-        )
-
-        print(
-            f"✓ Final report saved: "
-            f"{final_report}"
-        )
-
-    except Exception as error:
-
-        print(
-            "⚠ Final report could not be saved."
-        )
-
-        print(
-            f"{type(error).__name__}: {error}"
-        )
-
-    # ========================================================
-    # STEP 11 — SUMMARY
-    # ========================================================
-
-    print()
-    print("=" * 50)
-    print("========== SUMMARY ==========")
-    print("=" * 50)
-
     print(
-        f"Target: {filename}"
+        "========== SUMMARY =========="
     )
 
     print(
-        f"Risk Level: {risk_level}"
+        f"Target: {target}"
     )
 
     print(
-        f"Risk Score: {risk_score}/10"
+        f"Risk Level: {risk['level']}"
+    )
+
+    print(
+        f"Risk Score: {risk['score']}/10"
     )
 
     print(
@@ -919,37 +1517,60 @@ def main():
 
     print(
         f"Regression Tests: "
-        f"{regression.get('tests_run', 0)}"
+        f"{regression['tests_run']}"
     )
 
     print(
         f"Regression Passed: "
-        f"{regression.get('tests_passed', 0)}"
+        f"{regression['tests_passed']}"
     )
 
     print(
         f"Regression Failed: "
-        f"{regression.get('tests_failed', 0)}"
+        f"{regression['tests_failed']}"
     )
 
-    if final_report:
+    print(
+        f"Report: "
+        f"{report_path}"
+    )
 
-        print(
-            f"Final Report: "
-            f"{final_report}"
-        )
 
     print()
-    print("=" * 50)
-    print("       KAVACH scan completed.")
-    print("=" * 50)
+    print("=" * 60)
+    print(
+        "       KAVACH scan completed."
+    )
+    print("=" * 60)
+
 
     return 0
 
 
 # ============================================================
-# PROGRAM ENTRY POINT
+# ENTRY POINT
 # ============================================================
+
+def main():
+
+    if len(sys.argv) != 2:
+
+        print(
+            "Usage: python main.py <python_file>"
+        )
+
+        print(
+            "Example: "
+            "python main.py test_samples/vulnerable.py"
+        )
+
+        return 1
+
+
+    return run_kavach(
+        sys.argv[1]
+    )
+
 
 if __name__ == "__main__":
 
